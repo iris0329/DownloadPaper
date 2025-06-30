@@ -1,20 +1,16 @@
 import os
 import threading
 import time
-
 import requests
+from bs4 import BeautifulSoup
 
 
-class Paper_list_download():
+class PaperListDownloader:
     def Handler(self, start, end, url, filename):
-        # specify the starting and ending of the file
-        headers = {'Range': 'bytes=%d-%d' % (start, end)}
-        # request the specified part and get into variable
+        headers = {'Range': f'bytes={start}-{end}'}
         r = requests.get(url, headers=headers, stream=True)
-        # open the file and write the content of the html page into file.
         with open(filename, "r+b") as fp:
             fp.seek(start)
-            var = fp.tell()
             fp.write(r.content)
 
     def download_file(self, url_of_file, name, number_of_threads):
@@ -29,52 +25,77 @@ class Paper_list_download():
             print("Invalid URL")
             return
 
-        part = int(file_size) / number_of_threads
-        fp = open(file_name, "wb")
-        fp.close()
+        part = file_size // number_of_threads
+        with open(file_name, "wb") as fp:
+            fp.truncate(file_size)
+
+        threads = []
         for i in range(number_of_threads):
-            start = int(part * i)
-            end = int(start + part)
-            # create a Thread with start and end locations
+            start = part * i
+            end = file_size - 1 if i == number_of_threads - 1 else (start + part - 1)
             t = threading.Thread(target=self.Handler,
                                  kwargs={'start': start, 'end': end, 'url': url_of_file, 'filename': file_name})
             t.setDaemon(True)
             t.start()
+            threads.append(t)
 
-        main_thread = threading.current_thread()
-        for t in threading.enumerate():
-            if t is main_thread:
-                continue
+        for t in threads:
             t.join()
 
 
+def sanitize_filename(name):
+    return "".join(c for c in name if c.isalnum() or c in "._- ").rstrip()
+
+
+def get_title_from_url(url):
+    try:
+        if "arxiv.org" in url:
+            # use abstract page to get title
+            paper_id = url.split('/')[-1].replace('.pdf', '')
+            abs_url = f"https://arxiv.org/abs/{paper_id}"
+            r = requests.get(abs_url)
+        else:
+            r = requests.get(url)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        title_tag = soup.find('title')
+        if title_tag:
+            title = title_tag.text.strip()
+            # arXiv titles are like "Title of Paper | arXiv..."
+            title = title.split("|")[0].strip()
+            return sanitize_filename(title) + ".pdf"
+        return None
+    except Exception as e:
+        print(f"[Title Error] Cannot get title from {url}: {e}")
+        return None
+
+
 if __name__ == '__main__':
+    info_txt_path = './paper_list.txt'  # todo:1
+    save_path = './papers/'  # todo:2
 
-    info_txt_path = 'D:\\Code\\poincloudProcessor-P2PContrast\\tasks\\test_semantickitti\\paper_list.txt'  # todo:1
-    '''
-    example:
-    https://arxiv.org/pdf/2202.01810.pdf
-    https://openaccess.thecvf.com/content/CVPR2021/papers/Roh_Spatially_Consistent_Representation_Learning_CVPR_2021_paper.pdf
-    '''
-    save_path = 'F:\\zotero papers\\'  # todo: 2 #
+    os.makedirs(save_path, exist_ok=True)
 
-    paper_list_downloader = Paper_list_download()
+    paper_list_downloader = PaperListDownloader()
 
-    file = open(info_txt_path)
-    for line in file.readlines():
-        pdf_url = line.strip("\n")
+    with open(info_txt_path) as file:
+        for line in file:
+            pdf_url = line.strip()
+            if not pdf_url:
+                continue
 
-        (path, filename) = os.path.split(pdf_url)
+            print('\nDownloading pdf: {}'.format(pdf_url))
 
-        print('\nDownloadingpdf :{}.'.format(pdf_url))
+            title_filename = get_title_from_url(pdf_url)
+            if not title_filename:
+                title_filename = pdf_url.split('/')[-1]
 
-        # pdf_url = 'https://arxiv.org/pdf/1709.06508.pdf'
+            full_path = os.path.join(save_path, title_filename)
 
-        # print('\nDownloading {} ...'.format(filename))
-        # pdf_url = 'https://arxiv.org/pdf/{}.pdf'.format(arxiv_id)
-        # filename = filename_replace(paper_title) + '.pdf'
-        ts = time.time()
-        paper_list_downloader.download_file(url_of_file=pdf_url, name=os.path.join(save_path, filename),
-                                            number_of_threads=1)
-        te = time.time()
-        print('{:.0f}s [Complete] {}'.format(te - ts, filename))
+            ts = time.time()
+            paper_list_downloader.download_file(
+                url_of_file=pdf_url,
+                name=full_path,
+                number_of_threads=1
+            )
+            te = time.time()
+            print('{:.0f}s [Complete] {}'.format(te - ts, title_filename))
